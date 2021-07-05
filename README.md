@@ -1,73 +1,64 @@
-# IDN2QRadar
+# IDN2Syslog
 
-Send audit logs from SailPoint IDN to QRadar using AWS services to host the Docker container and periodically trigger the task on a schedule in AWS Fargate.
+Send audit logs from SailPoint IdentityNow to Syslog.
 
-Note: If you don't wish to use AWS services you can simply run the Python script locally (but you would need to refactor the logic to store the checkpoint timestamp e.g. in a local file) 
+The script stores the file locally or can store timestamp in AWS Systems Manager Parameter Store.
 
+This script is based on https://github.com/Flo451/IDN2QRadar and has been adapted to:
 
-## Project goal: 
-Send SailPoint IdentityNow (IDN) Event logs to QRadar SIEM. Once the events are in QRadar we can  build rules that trigger offenses if undesired behavior is observed.
+- Use v3 search API instead of Beta
+- Propose to store the timestamp locally using Shelves
+- Use environment variables for configuration instead of INI file
 
-Currently there is no official integration of IDN with QRadar so a custom solution has to be built.
+> WARNING: At this moment, the script must be scheduled to be executed periodically.
 
-## High Level workflow:
-* Periodically query the IDN Search API to retrieve  the latest event logs
-* Forward the events as TCP Syslog messages to QRadar 
-* Map events of custom log source so we can build rules triggering on certain event conditions
+## Configuration
 
-![AWS Architecture](resources/AWS%20Architecture.png)
+The configuration is done by environment variables.
+Configuration can also be done through a `.env` file.
 
+| Env variable name  | Description                                                                                    |
+| ------------------ | ---------------------------------------------------------------------------------------------- |
+| SYSLOG_HOST        | Hostname of the Syslog server                                                                  |
+| SYSLOG_SOCKET_TYPE | Connection type. Can be `UDP` or `TCP`. `UDP` by default                                       |
+| CACHE_PROVIDER     | Either `ShelveStore` for local cache (default) or `AWS` for AWS System Manager Parameter store |
+| CACHE_PATH         | Path for local cache                                                                           |
+| IDN_CLIENT_ID      | Client ID to connect to IdentityNow                                                            |
+| IDN_CLIENT_SECRET  | Client Secret to connect to IdentityNow                                                        |
+| IDN_TENANT         | Tenant name of IdentityNow                                                                     |
+| AWS_ACCESS_KEY     | AWS access key for System Manager Parameter store                                              |
+| AWS_SECRET_KEY     | AWS secret key for System Manager Parameter store                                              |
+| AWS_REGION         | AWS region for System Manager Parameter store                                                  |
 
-### Considerations:
-* The search API allows querying events with filters e.g.  `created:>2021-02-28` but log events in the IDN API can become available with a slight delay. We have to build a mechanism that  queries  the latest events allowing for them to be delayed: `created:>{query_checkpoint_time} AND created:<{current_time - query_search_delay}`
-* As seen above we need to record a checkpoint time that contains the last event that was retrieved from the API so we have a starting point for the next execution run. We store this value in  AWS System Manager Parameter store to keep state between executions.
-* QRadar expects events from the same logsource from the same log source identifier (IP address) or will otherwise consider them to be distinct log sources. As we run the container in ECS every execution will have a different IP address assigned to the container. To allow QRadar to associate the events we will stream them through a NGINX proxy (hosted in EC2) so that the source IP is always the same.
-* The event messages are encoded in JSON and transported via Syslog. This simplifies the event ID and event type mapping process in QRadar as we can simply parse JSON rather than Regex matching the relevant information in the payload.  
-* UDP syslog messages should not exceed 1,024 bytes but SailPoint Logs are often >1,024 bytes and arrive truncated in QRadar. We use TCP Syslog instead.
+## High Level workflow
 
+- Periodically query the IDN Search API to retrieve the latest event logs
+- Forward the events to Syslog messages\*
+- Store last timestamp
 
-Overview of  the AWS services  use in this solution
-* [Amazon Elastic Container Service (ECS)](https://aws.amazon.com/ecs), a highly scalable, high performance container management service that supports Docker containers
-* [AWS Fargate](https://aws.amazon.com/fargate) is a serverless compute engine for containers that works with ECS. Fargate removes the need to provision and manage servers, lets you specify resources per application, and improves security through application isolation by design.
-* [AWS Systems Manager Parameter Store](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-parameter-store.html) provides secure, hierarchical storage for configuration data management and secrets management as well as the ability to store values as plain text or encrypted data.
-* Amazon Elastic Compute Cloud (Amazon EC2) is a web service that provides secure, resizable compute capacity in the cloud. 
+## Testing
 
-### Prerequisites
-* Docker : to build image that can be pushed to AWS Container Registry and run in  ECS
+Testing has been performed using syslog-ng.
+A Docker compose file is present in the repository to run a syslog-ng.
 
-### How to deploy:
+## Considerations
 
-* Clone repo
-* Populate `config.ini` with credentials and connection information
-```bash
-[qradar-syslog-server]
-host = qradar-proxy.example.com
-port = 514
+- The search API allows querying events with filters e.g. `created:>2021-02-28` but log events in the IDN API can become available with a slight delay. We have to build a mechanism that queries the latest events allowing for them to be delayed: `created:>{query_checkpoint_time} AND created:<{current_time - query_search_delay}`
+- As seen above we need to record a checkpoint time that contains the last event that was retrieved from the API so we have a starting point for the next execution run. We store this value in AWS System Manager Parameter store or locally to keep state between executions.
+- The event messages are encoded in JSON and transported via Syslog.
+- UDP syslog messages should not exceed 1,024 bytes but SailPoint Logs are often >1,024 bytes. TCP message can be used instead
 
-[sailpoint.com]
-client_id = REPLACE
-client_secret = REPLACE
-tenant = REPLACE 
+## Hosting
 
-[aws-parameter-store]
-ACCESS_KEY = REPLACE
-SECRET_KEY = REPLACE
-```
-* build docker container and push to Container registry:
-```bash
-docker build -t idn2qradar-ecs .
-docker tag idn2qradar-ecs REPOSITORYID.dkr.ecr.eu-west-1.amazonaws.com/infosec
-eval "$(aws ecr get-login --no-include-email --region eu-west-1)"
-docker push  REPOSITORYID.dkr.ecr.eu-west-1.amazonaws.com/infosec
-```
-* Create a Scheduled Task in ECS to provision the container every 15 minutes 
-![](resources/Scheduled%20Task.png)
+### AWS
 
-### NGINX proxy 
-To avoid having multiple log sources for the same type of events you can deploy an [NGINX stream proxy ](https://docs.nginx.com/nginx/admin-guide/load-balancer/tcp-udp-load-balancer/). Example configuration in `nginx.conf`
+Overview of the AWS services use in this solution
 
-### QRadar Log source configuration
-The  Log Source Extension becomes automatically available the moment you start to map events in the DSM editor. You need to then assign the custom extension to your custom log source and from that moment onwards the events will be parsed accordingly.
+- [Amazon Elastic Container Service (ECS)](https://aws.amazon.com/ecs), a highly scalable, high performance container management service that supports Docker containers
+- [AWS Fargate](https://aws.amazon.com/fargate) is a serverless compute engine for containers that works with ECS. Fargate removes the need to provision and manage servers, lets you specify resources per application, and improves security through application isolation by design.
+- [AWS Systems Manager Parameter Store](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-parameter-store.html) provides secure, hierarchical storage for configuration data management and secrets management as well as the ability to store values as plain text or encrypted data.
+- Amazon Elastic Compute Cloud (Amazon EC2) is a web service that provides secure, resizable compute capacity in the cloud.
 
-![](resources/Logsource1.png)
+### Azure
 
+TBD

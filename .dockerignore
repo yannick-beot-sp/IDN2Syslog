@@ -1,0 +1,9 @@
+myenv
+.env
+resources
+.vscode
+tests
+LICENSE
+README.md
+Dockerfile
+docker-compose.yml

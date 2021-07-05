@@ -1,0 +1,15 @@
+version: '3'
+services:
+  syslogng:
+    image: balabit/syslog-ng:latest
+    restart: always
+    command: -F --no-caps
+    ports: 
+        - target: 514
+          published: 514
+          protocol: udp
+          mode: host
+        - 601:601
+    # volumes:
+    #   - "/logs/:/var/log/syslogng/"
+    #   - "./syslog-ng.conf:/etc/syslog-ng/syslog-ng.conf"
