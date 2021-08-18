@@ -109,7 +109,7 @@ class IDNClient(object):
 
         audit_url = "/v3/search"
         count = "true"
-
+        x_total_count = -1
         while True:
 
             queryparams = {
@@ -124,7 +124,6 @@ class IDNClient(object):
             if count == "true":
                 x_total_count = int(response.headers['x-total-count'])
                 self.helper.log_debug("Found {} result".format(x_total_count))
-            else:
                 count = "false"
 
             if x_total_count > 0 and (results := response.json()) is not None:
